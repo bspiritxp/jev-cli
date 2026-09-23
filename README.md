@@ -180,12 +180,6 @@ python -m jev_cli --help
 
 给 coding agent 用的命令说明在 [`SKILL.md`](SKILL.md)。
 
-## Pull Request
-
-指向 `main` 的非草稿 PR 会自动请 GPT 审核。结果写在 PR 评论里，不挡住合并。每次新推送会再审一次。草稿不审。
-
-审核跑在 GitHub Actions 上，模型是 OpenRouter 上的 `openai/gpt-4.1`。密钥只放在仓库 Secret `OPENROUTER_API_KEY`，不进 git。workflow 使用默认分支上的脚本，只读取 diff，不执行 PR 里的代码，所以 fork 的 PR 也能审。
-
 ## 许可
 
 [MIT](LICENSE)。Copyright (c) 2026 Jochen.He。
