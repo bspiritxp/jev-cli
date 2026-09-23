@@ -1,0 +1,35 @@
+name: GPT review
+
+# pull_request_target runs the workflow from the default branch and can read
+# secrets. The job checks out that trusted base and only fetches the PR diff
+# through the API. It does not check out or execute the pull request head.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: gpt-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Review pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GPT_REVIEW_MODEL: openai/gpt-4.1
+        run: python3 .github/scripts/gpt_review.py
