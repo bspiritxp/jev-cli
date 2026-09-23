@@ -197,3 +197,4 @@ python -m jev_cli --help
 - 模型页：https://openrouter.ai/~typesafe/jev-latest
 - TypeSafe 控制台：https://console.typesafe.ai
 - OpenRouter keys：https://openrouter.ai/settings/keys
+
