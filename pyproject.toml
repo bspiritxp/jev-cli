@@ -3,6 +3,7 @@ name = "jev-cli"
 version = "0.1.0"
 description = "CLI client for TypeSafe Jev (System One) structured decisions: noul / choice / score / classify"
 readme = "README.md"
+license = {text = "MIT"}
 authors = [
     { name = "Jochen.He", email = "hejunchen@xd.com" }
 ]
