@@ -1,0 +1,19 @@
+[project]
+name = "jev-cli"
+version = "0.1.0"
+description = "CLI client for TypeSafe Jev (System One) structured decisions: noul / choice / score / classify"
+readme = "README.md"
+authors = [
+    { name = "Jochen.He", email = "hejunchen@xd.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+jev-cli = "jev_cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
