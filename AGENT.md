@@ -25,7 +25,8 @@ src/jev_cli/
 ├── __init__.py   # 导出 app / main 及 client 的公共 API
 ├── __main__.py   # 支持 python -m jev_cli
 ├── client.py     # HTTP 客户端 + 问题构造器 + 异常/重试
-└── cli.py        # Typer 应用与四个子命令
+├── cli.py        # Typer 应用：noul / choice / score / classify / setup
+└── settings.py   # ~/.config/jev-cli/setting.yaml 的读写
 ```
 
 ## 开发循环
@@ -49,14 +50,14 @@ python -m jev_cli noul --help
 | Choice（选择） | `"choice"` | 必填 `map<选项, 描述|null>` | `choice`、`probabilities`、`confidence` |
 | Score（打分） | `"score"` | 必填有序数组（2~10 个等级描述） | `score`、`legend`、`probabilities`、`confidence` |
 
-错误码：401（鉴权）、400/422（校验，OpenRouter 用 400）、402（额度，`APIError`）、429/529（指数退避重试，client 已实现）、其余转 `APIError`。路由：`resolve_endpoint` 只看环境变量，不看 key 前缀。显式 `base_url` 或 `TYPESAFE_BASE_URL` 优先；否则 `TYPESAFE_API_KEY` 走官方，没有它才认 `OPENROUTER_API_KEY`。
+错误码：401（鉴权）、400/422（校验，OpenRouter 用 400）、402（额度，`APIError`）、429/529（指数退避重试，client 已实现）、其余转 `APIError`。路由不看 key 前缀。显式 `base_url` 参数优先；否则 `~/.config/jev-cli/setting.yaml` 里配齐的自定义端点（`base_url` + `api_key`，模型字段名 `model_name`）优先；再否则 `TYPESAFE_BASE_URL`；都没有时 `TYPESAFE_API_KEY` 走官方，没有它才认 `OPENROUTER_API_KEY`。`typesafe/` 前缀只在 host 为 `api.typesafe.ai` 时去掉；自定义端点原样发送 `model_name`。`setting.yaml` 只解析三个单行标量，不引入 PyYAML。
 
 ## CLI 约定（cli.py）
 
-- 四个子命令：`noul` / `choice` / `score` / `classify`（分类由 Choice 衍生，内部构造一个 choice 问题）。
-- 共享选项在 `@app.callback()` 中定义并存进 `ctx.obj`：`--api-key`（envvar `TYPESAFE_API_KEY`，缺省再读 `OPENROUTER_API_KEY`）、`--model`（默认 `jev-latest`）、`--base-url`（省略时按环境变量选择：有 `TYPESAFE_API_KEY` 走官方，否则有 `OPENROUTER_API_KEY` 走 OpenRouter；显式地址始终优先）、`--timeout`、`--json`。
-- `state` 通过三种方式之一传入：位置参数、`--file/-f`、管道 stdin；`--json-state` 把 state 解析为 JSON 对象/数组。
-- `--json` 输出原始 JSON 响应；人类可读模式下 token 用量打印到 **stderr**，结果打印到 stdout。
+- 五个子命令：`noul` / `choice` / `score` / `classify`（分类由 Choice 衍生；位置参数可重复，每项单独 `evaluate`，不是拼成一份 state）/ `setup`（把自定义端点写入 `$HOME/.config/jev-cli/setting.yaml`）。
+- 共享选项在 `@app.callback()` 中定义并存进 `ctx.obj`：`--api-key`、`--model`、`--base-url`、`--timeout`、`--json`。这三个连接选项**不再**用 Typer `envvar` 绑定，否则环境变量会伪装成显式参数，压过 `setting.yaml`。缺省解析在 `client.resolve_api_key` / `resolve_endpoint` / `resolve_model`：flag > 自定义配置 > `TYPESAFE_*` > `OPENROUTER_API_KEY`。
+- `state` 通过三种方式之一传入：位置参数、`--file/-f`、管道 stdin；`--json-state` 把 state 解析为 JSON 对象/数组。`classify` 的位置参数可重复，每项一次 `evaluate`；单个位置参数与 `--file` 同时给时仍用文件，多个位置参数不能再加 `--file`。
+- `--json` 输出原始 JSON 响应；`classify` 多项时改为 `[{"item","response"}, ...]`。人类可读模式下 token 用量打印到 **stderr**，结果打印到 stdout。
 - 异常处理：`client.TypeSafeError` 在 `main()` 中被捕获并打印 `错误: ...` 到 stderr 后以 exit code 1 退出；`typer.BadParameter` 由 Typer 自身渲染。
 
 ## 修改指南
@@ -67,4 +68,4 @@ python -m jev_cli noul --help
 
 ## 测试方法
 
-无正式测试套件。联调用一个本地 mock HTTPServer 指到 `--base-url http://127.0.0.1:<port>` 验证请求体与输出格式；`--json` 用于脚本化断言。改动后至少跑一遍四子命令的 `--help`、`py_compile` 与一次 mock 冒烟。
+无正式测试套件。联调用一个本地 mock HTTPServer 指到 `--base-url http://127.0.0.1:<port>` 验证请求体与输出格式；`--json` 用于脚本化断言。改动后至少跑一遍各子命令的 `--help`、`py_compile` 与一次 mock 冒烟。`setup` 用临时 `HOME` 验证写入、`--show`、`--clear`，以及自定义配置压过两把环境变量 key。

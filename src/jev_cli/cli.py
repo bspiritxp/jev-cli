@@ -1,15 +1,17 @@
 """``jev-cli`` — a command-line client for TypeSafe's Jev model.
 
-Subcommands map to Jev's three primitives plus one derived command:
+Subcommands map to Jev's three primitives, one derived command, and setup:
 
 - ``noul``      判断：yes/no 概率
 - ``choice``    选择：从给定选项中选一个
 - ``score``     打分：沿有序等级打分
-- ``classify``  分类：由 ``choice`` 衍生的单标签分类
+- ``classify``  分类：由 ``choice`` 衍生的单标签分类。位置参数可重复，每项单独请求
+- ``setup``     配置自定义端点，写入 ``~/.config/jev-cli/setting.yaml``
 
 The shared ``state`` is the content to evaluate. It is accepted as a positional
 argument, via ``--file``, or from stdin; use ``--json-state`` to pass it as a
-JSON object/array instead of plain text.
+JSON object/array instead of plain text. ``classify`` accepts repeated
+positionals and evaluates each one separately.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 import typer
 
-from jev_cli import client
+from jev_cli import client, settings
 
 app = typer.Typer(
     name="jev-cli",
@@ -38,23 +40,27 @@ def _callback(
     api_key: Optional[str] = typer.Option(
         None,
         "--api-key",
-        envvar=client.API_KEY_ENV,
         help=(
-            "API Key。"
-            f"优先环境变量 {client.API_KEY_ENV}，否则 {client.OPENROUTER_API_KEY_ENV}。"
+            "API Key。优先级：该选项 > ~/.config/jev-cli/setting.yaml > "
+            f"{client.API_KEY_ENV} > {client.OPENROUTER_API_KEY_ENV}。"
         ),
     ),
-    model: str = typer.Option(
-        client.DEFAULT_MODEL,
+    model: Optional[str] = typer.Option(
+        None,
         "--model",
-        envvar=client.MODEL_ENV,
-        help="模型 ID。两边都认 jev-latest；OpenRouter 的 typesafe/ 前缀在打 TypeSafe 时会去掉。",
+        help=(
+            "模型 ID。省略时：自定义 model_name > "
+            f"{client.MODEL_ENV} > {client.DEFAULT_MODEL}。"
+            "OpenRouter 的 typesafe/ 前缀在打 TypeSafe 时会去掉。"
+        ),
     ),
     base_url: Optional[str] = typer.Option(
         None,
         "--base-url",
-        envvar=client.BASE_URL_ENV,
-        help="API 根地址。省略时按 key 自动选择。显式设置始终优先，本地 mock 用这个。",
+        help=(
+            "API 根地址。优先级：该选项 > 自定义 base_url > "
+            f"{client.BASE_URL_ENV} > 按 key 自动选择。本地 mock 用这个。"
+        ),
     ),
     timeout: float = typer.Option(60.0, "--timeout", help="请求超时（秒）。"),
     json_output: bool = typer.Option(
@@ -118,15 +124,14 @@ def _parse_name_value(items: List[str], option_name: str) -> Dict[str, Optional[
     return result
 
 
-def _run(
+def _evaluate(
     ctx: typer.Context,
     state: Any,
     questions: Dict[str, Any],
-    question_id: str,
 ) -> Dict[str, Any]:
-    """Call the API and return the single answer for ``question_id``."""
+    """Call the API and return the raw response."""
     opts = ctx.obj
-    response = client.evaluate(
+    return client.evaluate(
         state=state,
         questions=questions,
         api_key=opts["api_key"],
@@ -134,22 +139,64 @@ def _run(
         base_url=opts["base_url"],
         timeout=opts["timeout"],
     )
-    if opts["json_output"]:
+
+
+def _emit_usage(response: Dict[str, Any]) -> None:
+    usage = response.get("usage")
+    if not usage:
+        return
+    typer.echo(
+        f"usage: input={usage.get('input_tokens')} tokens, "
+        f"output={usage.get('output_tokens')} tokens",
+        err=True,
+    )
+
+
+def _run(
+    ctx: typer.Context,
+    state: Any,
+    questions: Dict[str, Any],
+    question_id: str,
+) -> Dict[str, Any]:
+    """Call the API and return the single answer for ``question_id``."""
+    response = _evaluate(ctx, state, questions)
+    if ctx.obj["json_output"]:
         typer.echo(json.dumps(response, ensure_ascii=False, indent=2))
         raise typer.Exit()
 
     answer = response.get("answers", {}).get(question_id)
     if answer is None:
         raise client.APIError(f"响应中缺少答案 '{question_id}'：{response}")
-
-    usage = response.get("usage")
-    if usage:
-        typer.echo(
-            f"usage: input={usage.get('input_tokens')} tokens, "
-            f"output={usage.get('output_tokens')} tokens",
-            err=True,
-        )
+    _emit_usage(response)
     return answer
+
+
+def _classify_items(
+    states: Optional[List[str]],
+    file: Any,
+    json_state: bool,
+) -> List[Any]:
+    """One state per item. Positionals are separate requests, not one blob."""
+    if states and file is not None and len(states) > 1:
+        raise typer.BadParameter("多项位置参数与 --file 不能同时使用。")
+    if states and file is None:
+        items = []
+        for raw in states:
+            if not raw or not raw.strip():
+                raise typer.BadParameter("分类项不能为空。")
+            items.append(_resolve_state(raw, None, json_state))
+        return items
+    return [_resolve_state(None, file, json_state)]
+
+
+def _print_classify(answer: Dict[str, Any]) -> None:
+    typer.echo(
+        f"分类 (classify): {answer['choice']}  (confidence={answer['confidence']:.4f})"
+    )
+    typer.echo("各类别概率:")
+    ranked = sorted(answer["probabilities"].items(), key=lambda kv: -kv[1])
+    for name, prob in ranked:
+        typer.echo(f"  {name}: {prob * 100:.1f}%")
 
 
 # --------------------------------------------------------------------------- #
@@ -277,10 +324,10 @@ def score(
 # --------------------------------------------------------------------------- #
 
 
-@app.command("classify", help="分类：单标签分类（由 choice 衍生）。")
+@app.command("classify", help="分类：单标签分类。可传入多项，内部逐项请求。")
 def classify(
     ctx: typer.Context,
-    state: Optional[str] = typer.Argument(None, help="待评估的内容。"),
+    state: Optional[List[str]] = typer.Argument(None, help="待分类的内容，可多个。每项单独请求。"),
     label: List[str] = typer.Option(
         ...,
         "--label",
@@ -294,34 +341,168 @@ def classify(
         help="分类问题（默认英文，因 Jev 以英文训练为主）。",
     ),
     file: Optional[typer.FileText] = typer.Option(
-        None, "--file", "-f", help="从文件读取 state。"
+        None, "--file", "-f", help="从文件读取一项 state。与多个位置参数不能同时使用。",
     ),
     json_state: bool = typer.Option(
-        False, "--json-state", help="将 state 解析为 JSON 对象/数组。"
+        False, "--json-state", help="将每一项 state 解析为 JSON 对象/数组。",
     ),
 ) -> None:
     """分类（classify）：由 Choice 衍生的单标签分类。
 
-    内部即一个 ``choice`` 问题，``criteria`` 为各分类标签；返回概率最高的
-    类别及完整概率分布。对于深层/大规模分类体系，可级联多次调用。
+    内部即一个 ``choice`` 问题，``criteria`` 为各分类标签。多个位置参数会逐项请求，
+    不是把它们拼成一份 state。单项的人类可读输出与以前相同。
     """
     criteria = _parse_name_value(label, "--label")
     if len(criteria) < 2:
         raise typer.BadParameter("分类至少需要 2 个 --label。")
-    value = _resolve_state(state, file, json_state)
-    answer = _run(
-        ctx,
-        value,
-        {"class": client.choice_question(question, criteria)},
-        "class",
-    )
-    typer.echo(
-        f"分类 (classify): {answer['choice']}  (confidence={answer['confidence']:.4f})"
-    )
-    typer.echo("各类别概率:")
-    ranked = sorted(answer["probabilities"].items(), key=lambda kv: -kv[1])
-    for name, prob in ranked:
-        typer.echo(f"  {name}: {prob * 100:.1f}%")
+    items = _classify_items(state, file, json_state)
+    questions = {"class": client.choice_question(question, criteria)}
+    rendered: List[Dict[str, Any]] = []
+    multiple = len(items) > 1
+    for index, item in enumerate(items):
+        response = _evaluate(ctx, item, questions)
+        answer = response.get("answers", {}).get("class")
+        if answer is None:
+            raise client.APIError(f"响应中缺少答案 'class'：{response}")
+        rendered.append({"item": item, "response": response})
+        if ctx.obj["json_output"]:
+            continue
+        if multiple and index:
+            typer.echo("")
+        if multiple:
+            shown = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+            typer.echo(shown)
+        _print_classify(answer)
+        _emit_usage(response)
+    if not ctx.obj["json_output"]:
+        return
+    if len(rendered) == 1:
+        typer.echo(json.dumps(rendered[0]["response"], ensure_ascii=False, indent=2))
+        return
+    typer.echo(json.dumps(rendered, ensure_ascii=False, indent=2))
+
+
+def _mask_secret(value: str) -> str:
+    if len(value) <= 8:
+        return "****"
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def _prompt_required(label: str, current: str) -> str:
+    while True:
+        value = typer.prompt(label, default=current).strip() if current else typer.prompt(label).strip()
+        if value:
+            return value
+        typer.echo(f"{label} 不能为空。", err=True)
+
+
+def _prompt_settings(current: dict[str, str]) -> dict[str, str]:
+    path = settings.settings_path()
+    typer.echo(f"自定义端点将写入 {path}")
+    typer.echo("直接回车保留括号中的当前值。")
+    base_url = _prompt_required("Base URL", current.get("base_url", ""))
+    existing_key = current.get("api_key", "")
+    if existing_key:
+        typer.echo(f"API Key 已保存（{_mask_secret(existing_key)}）。直接回车保留，或输入新 key。")
+        typed = typer.prompt("API Key", default="", show_default=False).strip()
+        api_key = typed or existing_key
+    else:
+        api_key = _prompt_required("API Key", "")
+    model_name = _prompt_required("Model name", current.get("model_name") or client.DEFAULT_MODEL)
+    return {"base_url": base_url, "api_key": api_key, "model_name": model_name}
+
+
+def _print_settings() -> None:
+    path = settings.settings_path()
+    data = settings.load_settings()
+    typer.echo(f"配置文件：{path}")
+    if data.get("api_key") and data.get("base_url"):
+        typer.echo("状态：已配置，默认使用自定义端点")
+        typer.echo(f"  base_url: {data['base_url']}")
+        typer.echo(f"  api_key: {_mask_secret(data['api_key'])}")
+        model_name = data.get("model_name") or "（未设置，回退 TYPESAFE_MODEL / jev-latest）"
+        typer.echo(f"  model_name: {model_name}")
+    elif data:
+        typer.echo("状态：文件存在，但未同时设置 base_url 与 api_key，不会作为默认端点")
+        for key in ("base_url", "api_key", "model_name"):
+            if data.get(key):
+                shown = _mask_secret(data[key]) if key == "api_key" else data[key]
+                typer.echo(f"  {key}: {shown}")
+    else:
+        typer.echo("状态：未配置自定义端点")
+    typer.echo(f"未传 --api-key 时的 key 来源：{client.default_key_source()}")
+
+
+def _save_setup(merged: dict[str, str]) -> None:
+    try:
+        path = settings.save_settings(merged)
+    except settings.SettingsError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"已保存自定义端点：{path}")
+    typer.echo(f"  base_url: {merged['base_url']}")
+    typer.echo(f"  model_name: {merged['model_name']}")
+    typer.echo("之后默认使用该配置；没有它时才用 TYPESAFE_API_KEY，最后才用 OPENROUTER_API_KEY。")
+
+
+@app.command("setup", help="配置自定义端点（base_url、api_key、model_name）。")
+def setup(
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="自定义 API 根地址。"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="自定义 API Key。"),
+    model: Optional[str] = typer.Option(None, "--model", help="自定义模型名，写入 model_name。"),
+    show: bool = typer.Option(False, "--show", is_flag=True, help="显示已保存的自定义端点，不修改。"),
+    clear: bool = typer.Option(False, "--clear", is_flag=True, help="删除自定义端点配置。"),
+) -> None:
+    """把自定义端点写入 ``~/.config/jev-cli/setting.yaml``。
+
+    配齐后，后续命令默认用它，然后才是 ``TYPESAFE_API_KEY``，最后是
+    ``OPENROUTER_API_KEY``。单次调用仍可用全局 ``--api-key`` / ``--base-url`` /
+    ``--model`` 覆盖。
+    """
+    provided = [value for value in (base_url, api_key, model) if value is not None and value.strip()]
+    if show and (clear or provided):
+        raise typer.BadParameter("--show 只查看，不能同时修改或删除。")
+    if clear and provided:
+        raise typer.BadParameter("--clear 会删除全部自定义配置，不要同时传入配置项。")
+    if show:
+        try:
+            _print_settings()
+        except settings.SettingsError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        return
+    if clear:
+        try:
+            removed = settings.clear_settings()
+        except settings.SettingsError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        path = settings.settings_path()
+        if removed:
+            typer.echo(f"已删除自定义配置：{path}")
+        else:
+            typer.echo(f"没有自定义配置：{path}")
+        typer.echo("之后按 TYPESAFE_API_KEY、OPENROUTER_API_KEY 的顺序选择。")
+        return
+
+    try:
+        current = settings.load_settings()
+    except settings.SettingsError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if not provided:
+        if not sys.stdin.isatty():
+            raise typer.BadParameter(
+                "非交互环境请传入 --base-url、--api-key、--model，或使用 --show / --clear。"
+            )
+        _save_setup(_prompt_settings(current))
+        return
+
+    merged = dict(current)
+    if base_url is not None and base_url.strip():
+        merged["base_url"] = base_url.strip()
+    if api_key is not None and api_key.strip():
+        merged["api_key"] = api_key.strip()
+    if model is not None and model.strip():
+        merged["model_name"] = model.strip()
+    _save_setup(merged)
 
 
 def main() -> None:
