@@ -11,7 +11,7 @@ metadata:
 Jev 是 TypeSafe 的 "System One" 模型：**不生成文本**，对一段 `state` 做类型化判断，直接返回结构化结果（概率 / 选择 / 打分），无需解析 JSON 字符串。
 
 - 文档：https://docs.typesafe.ai/api
-- 端点按 key 自动选择：TypeSafe `POST https://api.typesafe.ai/v1/systemone`，OpenRouter `POST https://openrouter.ai/api/v1/systemone`。不需要手改 `--base-url`。
+- 端点优先级：`~/.config/jev-cli/setting.yaml` 自定义端点 > TypeSafe `POST https://api.typesafe.ai/v1/systemone` > OpenRouter `POST https://openrouter.ai/api/v1/systemone`。
 
 ## 何时使用
 
@@ -26,7 +26,15 @@ Jev 是 TypeSafe 的 "System One" 模型：**不生成文本**，对一段 `stat
 
 ## 前置配置
 
-任选一把 key。不设地址时看哪个环境变量有值：`TYPESAFE_API_KEY` 走官方，没有它才认 `OPENROUTER_API_KEY` 走 OpenRouter。不看 key 前缀。两边都认 `jev-latest`。
+优先级：自定义端点 > `TYPESAFE_API_KEY` > `OPENROUTER_API_KEY`。不看 key 前缀。两边都认 `jev-latest`。
+
+```bash
+jev-cli setup --base-url https://example.com --api-key sk-... --model jev-latest
+# 或交互：jev-cli setup
+# 查看 / 删除：jev-cli setup --show | jev-cli setup --clear
+```
+
+配齐后写入 `$HOME/.config/jev-cli/setting.yaml`（`base_url`、`api_key`、`model_name`），之后默认走自定义端点。没有该文件时：
 
 ```bash
 export TYPESAFE_API_KEY=tsk_...
@@ -34,16 +42,19 @@ export TYPESAFE_API_KEY=tsk_...
 export OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-| 环境变量 | 作用 | 默认值 |
+| 来源 | 作用 | 默认值 |
 | --- | --- | --- |
-| `TYPESAFE_API_KEY` | TypeSafe key。与 OpenRouter key 同时存在时优先 | — |
-| `OPENROUTER_API_KEY` | OpenRouter key。没有 TypeSafe key 时使用 | — |
-| `TYPESAFE_BASE_URL` | 显式 API 根地址；设置后不再自动选择 | 按 key 自动 |
-| `TYPESAFE_MODEL` | 模型 ID | `jev-latest` |
+| `setting.yaml` | 自定义端点。配齐 `base_url` 与 `api_key` 后优先于环境变量 | — |
+| `TYPESAFE_API_KEY` | TypeSafe key。没有自定义端点时优先 | — |
+| `OPENROUTER_API_KEY` | OpenRouter key。没有自定义端点、也没有 TypeSafe key 时使用 | — |
+| `TYPESAFE_BASE_URL` | 显式 API 根地址；自定义 `base_url` 或 `--base-url` 存在时不生效 | 按 key 自动 |
+| `TYPESAFE_MODEL` | 模型 ID。自定义 `model_name` 或 `--model` 存在时不生效 | `jev-latest` |
+
+单次覆盖写在子命令前：`--api-key`、`--base-url`、`--model`。已保存自定义端点时，只改 key 不会换 host。
 
 ## 命令参考
 
-`state`（待评估内容）三种传入方式：位置参数、`--file/-f`、管道 stdin；`--json-state` 可传 JSON 对象/数组。所有子命令支持 `--json`（输出原始 JSON）。
+`noul` / `choice` / `score` 的 `state` 三选一：位置参数、`--file/-f`、管道 stdin。`classify` 的位置参数可重复，每项单独请求；`--file` 和管道仍是一项。`--json-state` 把每一项解析为 JSON 对象/数组。`--json` 在一项时是原始响应；`classify` 多项时是 `[{"item","response"}, ...]`。
 
 ### 判断 `noul`
 
@@ -85,36 +96,41 @@ jev-cli score "The export button crashes Safari." -q "How severe?" \
 
 ### 分类 `classify`（由 choice 衍生）
 
-内部即一次 `choice` 调用，分类标签作为 criteria。
+内部即一次 `choice` 调用，分类标签作为 criteria。多个位置参数会逐项请求，不要把多项拼进同一份 `state`。
 
 ```bash
 jev-cli classify "TypeError: cannot read property of undefined" \
   -l javascript -l python -l go -l rust
 # 分类 (classify): javascript  (confidence=0.7800)
+
+jev-cli classify 鼠标 键盘 手柄 -l "游戏外设" -l "办公外设"
 ```
 
 - `-l/--label` 可重复，格式 `name` 或 `name=描述`；至少 2 个。
+- 位置参数可重复。每项一次请求，输出按输入顺序。单项输出形状不变。
+- `--json`：一项时仍是原始响应；多项时是 `[{"item","response"}, ...]`。
 - 默认问题为英文（Jev 以英文训练为主），可用 `-q` 覆盖。
 
 ## 输出与脚本化
 
 - **人类可读**：结果在 stdout，token 用量在 stderr（不污染管道）。
-- **`--json`**：输出完整原始 JSON 响应（含 `answers`、`usage`、`model`），供脚本消费：
+- **`--json`**：一项时是完整原始 JSON（含 `answers`、`usage`、`model`）。`classify` 多项时是 `[{"item","response"}, ...]`，先 `json.load` 一次再遍历：
 
 ```bash
 jev-cli --json classify "..." -l a -l b | python3 -c 'import json,sys; print(json.load(sys.stdin)["answers"]["class"]["choice"])'
+jev-cli --json classify 鼠标 键盘 -l a -l b | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["item"], rows[0]["response"]["answers"]["class"]["choice"])'
 ```
 
 ## 关键语义
 
 - **confidence**（choice/score 才有）：由概率分布集中度算得，单峰=高，分散=低。低 confidence 意味着「该转人工/追问」而非直接采信。
 - **概率求和为 1**：choice 的 `probabilities`、score 的 `probabilities` 均如此。
-- **一次请求可问多个问题**（并行求值、几乎不加时延）：本 CLI 每个子命令发一个问题；批量场景用 `client.evaluate(questions={...})` 或多次调用。
+- **一次请求可问多个问题**（并行求值、几乎不加时延）：本 CLI 每个请求发一个问题。`classify` 多项是包装层循环，每项一次请求。要对同一份 `state` 并行问多个问题，用 `client.evaluate(questions={...})`。
 - **CJK 输入**：Jev 支持但准确率较低，questions/instructions 尽量用英文。
 
 ## 排障
 
-- `错误: ... Invalid API key` / `User not found` → key 无效。TypeSafe 查 `TYPESAFE_API_KEY`，OpenRouter 查 `OPENROUTER_API_KEY`。
-- `错误: 缺少 API Key...` → 两把 key 都没设。两把都设时走官方。要在官方 key 也存在时改走 OpenRouter，用 `--base-url https://openrouter.ai/api`。
+- `错误: ... Invalid API key` / `User not found` → key 无效。自定义端点查 `setting.yaml`，否则 TypeSafe 查 `TYPESAFE_API_KEY`，OpenRouter 查 `OPENROUTER_API_KEY`。
+- `错误: 缺少 API Key...` → 没配自定义端点，两把环境变量 key 也都没设。已配置自定义端点时环境变量不会自动顶上；要改回官方，`jev-cli setup --clear`，或同时传 `--api-key` 与 `--base-url https://api.typesafe.ai`。
 - `429/529` → client 已做指数退避重试；仍失败则稍后再试。
 - 想联调/验证请求体：`--base-url http://127.0.0.1:<port>` 指向本地 mock 服务器。

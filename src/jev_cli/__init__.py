@@ -1,4 +1,4 @@
-"""jev-cli — 调用 Jev (System One) 做结构化判断。TypeSafe 与 OpenRouter 按 key 自动选择。"""
+"""jev-cli — 调用 Jev (System One) 做结构化判断。自定义端点优先，其次 TypeSafe，最后 OpenRouter。"""
 
 from jev_cli.cli import app, main
 from jev_cli.client import (
@@ -16,7 +16,7 @@ from jev_cli.client import (
     score_question,
 )
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "app",

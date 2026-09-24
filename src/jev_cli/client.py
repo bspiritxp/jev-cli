@@ -9,9 +9,10 @@ Two hosts speak this contract:
 - TypeSafe:    ``POST https://api.typesafe.ai/v1/systemone``
 - OpenRouter:  ``POST https://openrouter.ai/api/v1/systemone``
 
-``evaluate`` picks the host from which credential env var is set. ``TYPESAFE_API_KEY``
-wins; otherwise ``OPENROUTER_API_KEY`` selects OpenRouter. Key text is never
-inspected. An explicit base URL always wins, so local mocks keep working.
+``evaluate`` uses a custom endpoint from ``~/.config/jev-cli/setting.yaml`` when
+``base_url`` and ``api_key`` are both set. Otherwise ``TYPESAFE_API_KEY`` selects
+TypeSafe, and ``OPENROUTER_API_KEY`` selects OpenRouter. Key text is never
+inspected. An explicit base URL argument always wins, so local mocks keep working.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Mapping, Sequence
 
+from jev_cli import settings
+
 DEFAULT_BASE_URL = "https://api.typesafe.ai"
 OPENROUTER_API_BASE = "https://openrouter.ai/api"
 DEFAULT_MODEL = "jev-latest"
@@ -34,6 +37,7 @@ BASE_URL_ENV = "TYPESAFE_BASE_URL"
 MODEL_ENV = "TYPESAFE_MODEL"
 
 _OPENROUTER_HOSTS = frozenset({"openrouter.ai", "www.openrouter.ai"})
+_TYPESAFE_HOSTS = frozenset({"api.typesafe.ai"})
 _TYPESAFE_MODEL_PREFIXES = ("~typesafe/", "typesafe/")
 
 # HTTP status codes the docs say to retry with exponential backoff.
@@ -97,6 +101,11 @@ def _is_openrouter_url(url: str) -> bool:
     return host in _OPENROUTER_HOSTS
 
 
+def _is_typesafe_url(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return host in _TYPESAFE_HOSTS
+
+
 def _is_full_endpoint(url: str) -> bool:
     path = urllib.parse.urlparse(url).path.rstrip("/")
     return path.endswith("/v1/systemone") or path.endswith("/alpha/decisions")
@@ -113,12 +122,33 @@ def normalize_base_url(base_url: str) -> str:
     return base_url
 
 
+def _endpoint_from_base(base_url: str) -> str:
+    normalized = normalize_base_url(base_url)
+    if _is_full_endpoint(normalized):
+        return normalized
+    return f"{normalized}/v1/systemone"
+
+
+def _custom_endpoint() -> dict[str, str] | None:
+    try:
+        return settings.configured_endpoint()
+    except settings.SettingsError as exc:
+        raise TypeSafeError(str(exc)) from exc
+
+
 def resolve_api_key(api_key: str | None = None) -> str:
-    """``--api-key`` / argument, then TypeSafe env, then OpenRouter env."""
-    key = (api_key or os.environ.get(API_KEY_ENV) or os.environ.get(OPENROUTER_API_KEY_ENV) or "").strip()
+    """``--api-key`` / argument, then custom settings, then TypeSafe env, then OpenRouter env."""
+    explicit = (api_key or "").strip()
+    if explicit:
+        return explicit
+    custom = _custom_endpoint()
+    if custom:
+        return custom["api_key"]
+    key = _env_value(API_KEY_ENV) or _env_value(OPENROUTER_API_KEY_ENV)
     if not key:
         raise AuthenticationError(
-            f"缺少 API Key：请设置 {API_KEY_ENV}（TypeSafe）或 {OPENROUTER_API_KEY_ENV}（OpenRouter），"
+            "缺少 API Key：请运行 jev-cli setup 配置自定义端点，"
+            f"或设置 {API_KEY_ENV}（TypeSafe）/ {OPENROUTER_API_KEY_ENV}（OpenRouter），"
             "或传入 --api-key。"
         )
     return key
@@ -127,17 +157,21 @@ def resolve_api_key(api_key: str | None = None) -> str:
 def resolve_endpoint(base_url: str | None = None) -> str:
     """Return the System One URL.
 
-    An explicit base URL (argument or ``TYPESAFE_BASE_URL``) always wins.
-    Otherwise ``TYPESAFE_API_KEY`` selects TypeSafe, and ``OPENROUTER_API_KEY``
-    selects OpenRouter only when the official env var is unset. The key string
-    itself is not inspected.
+    An explicit base URL argument always wins, including a local mock. Otherwise
+    a complete custom endpoint in ``~/.config/jev-cli/setting.yaml`` wins, then
+    ``TYPESAFE_BASE_URL``. If none of those are set, ``TYPESAFE_API_KEY`` selects
+    TypeSafe and ``OPENROUTER_API_KEY`` selects OpenRouter. The key string itself
+    is not inspected.
     """
-    explicit = (base_url or _env_value(BASE_URL_ENV)).strip()
+    explicit = (base_url or "").strip()
     if explicit:
-        normalized = normalize_base_url(explicit)
-        if _is_full_endpoint(normalized):
-            return normalized
-        return f"{normalized}/v1/systemone"
+        return _endpoint_from_base(explicit)
+    custom = _custom_endpoint()
+    if custom:
+        return _endpoint_from_base(custom["base_url"])
+    env_url = _env_value(BASE_URL_ENV)
+    if env_url:
+        return _endpoint_from_base(env_url)
     if _env_value(API_KEY_ENV):
         return f"{DEFAULT_BASE_URL}/v1/systemone"
     if _env_value(OPENROUTER_API_KEY_ENV):
@@ -145,9 +179,38 @@ def resolve_endpoint(base_url: str | None = None) -> str:
     return f"{DEFAULT_BASE_URL}/v1/systemone"
 
 
+def resolve_model(model: str | None = None) -> str:
+    """``--model`` / argument, then custom settings, then ``TYPESAFE_MODEL``, then default."""
+    explicit = (model or "").strip()
+    if explicit:
+        return explicit
+    custom = _custom_endpoint()
+    if custom and custom.get("model_name"):
+        return custom["model_name"]
+    return _env_value(MODEL_ENV) or DEFAULT_MODEL
+
+
+def default_key_source() -> str:
+    """Name the key source used when no ``--api-key`` is passed."""
+    try:
+        custom = settings.configured_endpoint()
+    except settings.SettingsError as exc:
+        return f"自定义配置无效：{exc}"
+    if custom:
+        return "自定义配置"
+    if _env_value(API_KEY_ENV):
+        return API_KEY_ENV
+    if _env_value(OPENROUTER_API_KEY_ENV):
+        return OPENROUTER_API_KEY_ENV
+    return "无"
+
+
 def canonical_model(model: str, url: str) -> str:
-    """Strip OpenRouter's ``typesafe/`` prefix when calling TypeSafe directly."""
-    if _is_openrouter_url(url):
+    """Strip OpenRouter's ``typesafe/`` prefix only on the official TypeSafe host.
+
+    Custom endpoints keep ``model_name`` unchanged. OpenRouter also keeps it.
+    """
+    if not _is_typesafe_url(url):
         return model
     for prefix in _TYPESAFE_MODEL_PREFIXES:
         if model.startswith(prefix):
@@ -171,13 +234,14 @@ def evaluate(
     question id -> question object (see ``noul_question``, ``choice_question``,
     ``score_question``).
 
-    Host selection ignores the key string. Pass ``base_url`` (or set
-    ``TYPESAFE_BASE_URL``) to force a host, including a local mock. Otherwise
-    ``TYPESAFE_API_KEY`` selects TypeSafe, and ``OPENROUTER_API_KEY`` selects
-    OpenRouter only when the official env var is unset. Both accept ``jev-latest``.
+    Host selection ignores the key string. Pass ``base_url`` to force a host,
+    including a local mock. Otherwise a complete custom endpoint wins, then
+    ``TYPESAFE_BASE_URL``. With no explicit URL, ``TYPESAFE_API_KEY`` selects
+    TypeSafe, and ``OPENROUTER_API_KEY`` selects OpenRouter only when the
+    official env var is unset. Both accept ``jev-latest``.
     """
     api_key = resolve_api_key(api_key)
-    model = model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+    model = resolve_model(model)
     url = resolve_endpoint(base_url)
     model = canonical_model(model, url)
 
