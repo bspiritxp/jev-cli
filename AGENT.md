@@ -57,7 +57,7 @@ python -m jev_cli noul --help
 - 五个子命令：`noul` / `choice` / `score` / `classify`（分类由 Choice 衍生；位置参数可重复，每项单独 `evaluate`，不是拼成一份 state）/ `setup`（把自定义端点写入 `$HOME/.config/jev-cli/setting.yaml`）。
 - 共享选项在 `@app.callback()` 中定义并存进 `ctx.obj`：`--api-key`、`--model`、`--base-url`、`--timeout`、`--json`。这三个连接选项**不再**用 Typer `envvar` 绑定，否则环境变量会伪装成显式参数，压过 `setting.yaml`。缺省解析在 `client.resolve_api_key` / `resolve_endpoint` / `resolve_model`：flag > 自定义配置 > `TYPESAFE_*` > `OPENROUTER_API_KEY`。
 - `state` 通过三种方式之一传入：位置参数、`--file/-f`、管道 stdin；`--json-state` 把 state 解析为 JSON 对象/数组。`classify` 的位置参数可重复，每项一次 `evaluate`；单个位置参数与 `--file` 同时给时仍用文件，多个位置参数不能再加 `--file`。
-- `--json` 输出原始 JSON 响应；`classify` 多项时改为 `[{"item","response"}, ...]`。人类可读模式下 token 用量打印到 **stderr**，结果打印到 stdout。
+- `--json` 输出原始 JSON 响应；`classify` 多项时改为 `[{"item","response"}, ...]`。人类可读模式下，单项展开概率，多项打成一张表；token 用量打印到 **stderr**。
 - 异常处理：`client.TypeSafeError` 在 `main()` 中被捕获并打印 `错误: ...` 到 stderr 后以 exit code 1 退出；`typer.BadParameter` 由 Typer 自身渲染。
 
 ## 修改指南
