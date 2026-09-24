@@ -67,11 +67,11 @@ jev-cli noul "Help! My payouts have been failing for 3 days." \
 ```
 
 - `-q/--question`（必填）yes/no 问题；`--yes`/`--no` 可选，界定「是/否」含义。
-- noul 无独立 confidence 字段——0.5 附近即「是/否」概率接近。
+- noul 无独立置信度——0.5 附近即「是/否」概率接近。
 
 ### 选择 `choice`
 
-返回概率最高的选项、每个选项的概率、confidence。
+返回概率最高的选项、每个选项的概率、置信度。
 
 ```bash
 jev-cli choice "My card was charged twice." -q "Which team should handle this?" \
@@ -83,12 +83,12 @@ jev-cli choice "My card was charged twice." -q "Which team should handle this?" 
 
 ### 打分 `score`
 
-返回概率加权分数（可落在等级之间）、等级概率、confidence。
+返回概率加权分数（可落在等级之间）、等级概率、置信度。
 
 ```bash
 jev-cli score "The export button crashes Safari." -q "How severe?" \
   -l "Cosmetic" -l "Broken, workaround exists" -l "Blocking, no workaround"
-# 打分 (score): 1.3000  (confidence=0.5400)
+# 打分 (score): 1.3000  (置信度=0.5400)
 ```
 
 - `-l/--level` 可重复、**从低到高**、至少 2 个、最多 10 个。
@@ -101,13 +101,13 @@ jev-cli score "The export button crashes Safari." -q "How severe?" \
 ```bash
 jev-cli classify "TypeError: cannot read property of undefined" \
   -l javascript -l python -l go -l rust
-# 分类 (classify): javascript  (confidence=0.7800)
+# 分类 (classify): javascript  (置信度=0.7800)
 
 jev-cli classify 鼠标 键盘 手柄 -l "游戏外设" -l "办公外设"
 ```
 
 - `-l/--label` 可重复，格式 `name` 或 `name=描述`；至少 2 个。
-- 位置参数可重复。每项一次请求，输出按输入顺序。单项输出形状不变。
+- 位置参数可重复。每项一次请求。多项的人类可读输出是一张表（项、分类、概率、置信度），不是逐项展开。单项输出形状不变。
 - `--json`：一项时仍是原始响应；多项时是 `[{"item","response"}, ...]`。
 - 默认问题为英文（Jev 以英文训练为主），可用 `-q` 覆盖。
 
@@ -123,7 +123,7 @@ jev-cli --json classify 鼠标 键盘 -l a -l b | python3 -c 'import json,sys; r
 
 ## 关键语义
 
-- **confidence**（choice/score 才有）：由概率分布集中度算得，单峰=高，分散=低。低 confidence 意味着「该转人工/追问」而非直接采信。
+- **置信度**（choice/score 才有，JSON 字段仍是 `confidence`）：由概率分布集中度算得，单峰=高，分散=低。低置信度意味着「该转人工/追问」而非直接采信。
 - **概率求和为 1**：choice 的 `probabilities`、score 的 `probabilities` 均如此。
 - **一次请求可问多个问题**（并行求值、几乎不加时延）：本 CLI 每个请求发一个问题。`classify` 多项是包装层循环，每项一次请求。要对同一份 `state` 并行问多个问题，用 `client.evaluate(questions={...})`。
 - **CJK 输入**：Jev 支持但准确率较低，questions/instructions 尽量用英文。

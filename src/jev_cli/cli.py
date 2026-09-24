@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sys
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 import typer
@@ -188,15 +189,73 @@ def _classify_items(
         return items
     return [_resolve_state(None, file, json_state)]
 
+def _display_width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1 for char in text)
+
+
+def _pad_display(text: str, width: int) -> str:
+    return text + " " * max(width - _display_width(text), 0)
+
+
+def _item_label(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    return json.dumps(item, ensure_ascii=False)
+
 
 def _print_classify(answer: Dict[str, Any]) -> None:
     typer.echo(
-        f"分类 (classify): {answer['choice']}  (confidence={answer['confidence']:.4f})"
+        f"分类 (classify): {answer['choice']}  (置信度={answer['confidence']:.4f})"
     )
     typer.echo("各类别概率:")
     ranked = sorted(answer["probabilities"].items(), key=lambda kv: -kv[1])
     for name, prob in ranked:
         typer.echo(f"  {name}: {prob * 100:.1f}%")
+
+
+def _print_classify_table(rows: List[tuple[str, Dict[str, Any]]]) -> None:
+    """One table for every item. Do not repeat the single-item block."""
+    prepared: List[tuple[str, str, str, str]] = []
+    for item, answer in rows:
+        choice = str(answer.get("choice", ""))
+        probability = (answer.get("probabilities") or {}).get(answer.get("choice"))
+        probability_text = f"{probability * 100:.1f}%" if isinstance(probability, (int, float)) else "-"
+        confidence = answer.get("confidence")
+        confidence_text = f"{confidence:.4f}" if isinstance(confidence, (int, float)) else "-"
+        prepared.append((item, choice, probability_text, confidence_text))
+    headers = ("项", "分类", "概率", "置信度")
+    widths = [
+        max(_display_width(headers[index]), *(_display_width(row[index]) for row in prepared))
+        for index in range(4)
+    ]
+
+    def format_row(columns: tuple[str, str, str, str]) -> str:
+        return "  ".join(
+            _pad_display(column, widths[index]) for index, column in enumerate(columns)
+        ).rstrip()
+
+    typer.echo(format_row(headers))
+    for row in prepared:
+        typer.echo(format_row(row))
+
+
+def _emit_total_usage(responses: List[Dict[str, Any]]) -> None:
+    total_input = 0
+    total_output = 0
+    seen = False
+    for response in responses:
+        usage = response.get("usage") or {}
+        if "input_tokens" in usage or "output_tokens" in usage:
+            seen = True
+        total_input += usage.get("input_tokens") or 0
+        total_output += usage.get("output_tokens") or 0
+    if not seen:
+        return
+    typer.echo(
+        f"usage: requests={len(responses)}, input={total_input} tokens, "
+        f"output={total_output} tokens",
+        err=True,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -268,7 +327,7 @@ def choice(
         "choice",
     )
     typer.echo(
-        f"选择 (choice): {answer['choice']}  (confidence={answer['confidence']:.4f})"
+        f"选择 (choice): {answer['choice']}  (置信度={answer['confidence']:.4f})"
     )
     typer.echo("概率分布:")
     for name, prob in answer["probabilities"].items():
@@ -310,7 +369,7 @@ def score(
         "score",
     )
     typer.echo(
-        f"打分 (score): {answer['score']:.4f}  (confidence={answer['confidence']:.4f})"
+        f"打分 (score): {answer['score']:.4f}  (置信度={answer['confidence']:.4f})"
     )
     typer.echo("等级概率:")
     legend = answer.get("legend", {})
@@ -350,7 +409,7 @@ def classify(
     """分类（classify）：由 Choice 衍生的单标签分类。
 
     内部即一个 ``choice`` 问题，``criteria`` 为各分类标签。多个位置参数会逐项请求，
-    不是把它们拼成一份 state。单项的人类可读输出与以前相同。
+    不是把它们拼成一份 state。多项的人类可读输出是一张表；单项仍展开各类别概率。
     """
     criteria = _parse_name_value(label, "--label")
     if len(criteria) < 2:
@@ -358,28 +417,27 @@ def classify(
     items = _classify_items(state, file, json_state)
     questions = {"class": client.choice_question(question, criteria)}
     rendered: List[Dict[str, Any]] = []
+    table_rows: List[tuple[str, Dict[str, Any]]] = []
     multiple = len(items) > 1
-    for index, item in enumerate(items):
+    for item in items:
         response = _evaluate(ctx, item, questions)
         answer = response.get("answers", {}).get("class")
         if answer is None:
             raise client.APIError(f"响应中缺少答案 'class'：{response}")
         rendered.append({"item": item, "response": response})
-        if ctx.obj["json_output"]:
-            continue
-        if multiple and index:
-            typer.echo("")
-        if multiple:
-            shown = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
-            typer.echo(shown)
-        _print_classify(answer)
-        _emit_usage(response)
-    if not ctx.obj["json_output"]:
+        table_rows.append((_item_label(item), answer))
+    if ctx.obj["json_output"]:
+        if len(rendered) == 1:
+            typer.echo(json.dumps(rendered[0]["response"], ensure_ascii=False, indent=2))
+        else:
+            typer.echo(json.dumps(rendered, ensure_ascii=False, indent=2))
         return
-    if len(rendered) == 1:
-        typer.echo(json.dumps(rendered[0]["response"], ensure_ascii=False, indent=2))
+    if multiple:
+        _print_classify_table(table_rows)
+        _emit_total_usage([entry["response"] for entry in rendered])
         return
-    typer.echo(json.dumps(rendered, ensure_ascii=False, indent=2))
+    _print_classify(table_rows[0][1])
+    _emit_usage(rendered[0]["response"])
 
 
 def _mask_secret(value: str) -> str:

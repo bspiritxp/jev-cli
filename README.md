@@ -105,7 +105,7 @@ cat ticket.txt | jev-cli noul -q "Is this urgent?"
 
 ## 判断 `noul`
 
-返回「是」的概率，0 到 1。CLI 把 `>= 0.5` 印成「是」，否则印成「否」。没有单独的 confidence：0.5 附近就是拿不准。
+返回「是」的概率，0 到 1。CLI 把 `>= 0.5` 印成「是」，否则印成「否」。没有单独的置信度：0.5 附近就是拿不准。
 
 ```bash
 jev-cli noul "Help! My payouts have been failing for 3 days." \
@@ -122,7 +122,7 @@ jev-cli noul "Help! My payouts have been failing for 3 days." \
 
 ## 选择 `choice`
 
-从你给的选项里选一个，并给出每个选项的概率和 confidence。
+从你给的选项里选一个，并给出每个选项的概率和置信度。
 
 ```bash
 jev-cli choice "My card was charged twice." \
@@ -133,7 +133,7 @@ jev-cli choice "My card was charged twice." \
 ```
 
 ```text
-选择 (choice): billing  (confidence=0.7800)
+选择 (choice): billing  (置信度=0.7800)
 概率分布:
   billing: 0.8000
   technical: 0.1000
@@ -142,7 +142,7 @@ jev-cli choice "My card was charged twice." \
 
 `-o/--option` 可重复，格式是 `name` 或 `name=描述`，至少 1 个。选项里没有现成答案时，加一个 `other` 或 `none` 兜底，比硬塞进错误类别更安全。概率加总为 1。
 
-confidence 看概率有多集中：单峰高，分散低。低 confidence 表示该转人工或追问，不要直接采信。
+置信度看概率有多集中：单峰高，分散低。低置信度表示该转人工或追问，不要直接采信。
 
 ## 打分 `score`
 
@@ -157,7 +157,7 @@ jev-cli score "The export button crashes Safari." \
 ```
 
 ```text
-打分 (score): 1.3000  (confidence=0.5400)
+打分 (score): 1.3000  (置信度=0.5400)
 等级概率:
   [0] Cosmetic: 0.2000
   [1] Broken, workaround exists: 0.6000
@@ -183,7 +183,7 @@ jev-cli classify 鼠标 键盘 手柄 \
 单项输出：
 
 ```text
-分类 (classify): javascript  (confidence=0.7800)
+分类 (classify): javascript  (置信度=0.7800)
 各类别概率:
   javascript: 80.0%
   python: 10.0%
@@ -191,20 +191,13 @@ jev-cli classify 鼠标 键盘 手柄 \
   rust: 10.0%
 ```
 
-多项时，每项前面多一行原文，块与块之间空一行：
+多项时不逐项展开，打成一张表。概率是该项胜出类别的概率：
 
 ```text
-鼠标
-分类 (classify): 办公外设  (confidence=0.9300)
-各类别概率:
-  办公外设: 96.0%
-  游戏外设: 4.0%
-
-键盘
-分类 (classify): 办公外设  (confidence=0.9400)
-各类别概率:
-  办公外设: 97.0%
-  游戏外设: 3.0%
+项      分类      概率     置信度
+鼠标    办公外设  96.0%    0.9300
+键盘    办公外设  97.0%    0.9400
+手柄    游戏外设  100.0%   0.9900
 ```
 
 `-l/--label` 至少 2 个，格式同样是 `name` 或 `name=描述`。
